@@ -210,6 +210,11 @@ func (c *Client) EnumerateCiphers(hostname, ip, port string, options clients.Con
 		threads = len(toEnumerate)
 	}
 
+	timeout := time.Duration(c.options.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
 	// setup connection pool
 	pool, err := connpool.NewOneTimePool(context.Background(), address, threads)
 	if err != nil {
@@ -227,11 +232,14 @@ func (c *Client) EnumerateCiphers(hostname, ip, port string, options clients.Con
 
 	for _, v := range toEnumerate {
 		// create new baseConn and pass it to tlsclient
-		baseConn, err := pool.Acquire(context.Background())
+		acquireCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		baseConn, err := pool.Acquire(acquireCtx)
+		cancel()
 		if err != nil {
 			return enumeratedCiphers, errorutil.NewWithErr(err).WithTag("ctls") //nolint
 		}
 		stats.IncrementCryptoTLSConnections()
+		_ = baseConn.SetDeadline(time.Now().Add(timeout))
 		baseCfg.CipherSuites = []uint16{tlsCiphers[v]}
 
 		conn := tls.Client(baseConn, baseCfg)

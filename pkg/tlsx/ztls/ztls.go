@@ -226,6 +226,11 @@ func (c *Client) EnumerateCiphers(hostname, ip, port string, options clients.Con
 		threads = len(toEnumerate)
 	}
 
+	timeout := time.Duration(c.options.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
 	// setup connection pool
 	pool, err := connpool.NewOneTimePool(context.Background(), address, threads)
 	if err != nil {
@@ -249,15 +254,20 @@ func (c *Client) EnumerateCiphers(hostname, ip, port string, options clients.Con
 	gologger.Debug().Label("ztls").Msgf("Starting cipher enumeration with %v ciphers in %v", len(toEnumerate), options.VersionTLS)
 
 	for _, v := range toEnumerate {
-		baseConn, err := pool.Acquire(context.Background())
+		acquireCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		baseConn, err := pool.Acquire(acquireCtx)
+		cancel()
 		if err != nil {
 			return enumeratedCiphers, errorutil.NewWithErr(err).WithTag("ztls") //nolint
 		}
 		stats.IncrementZcryptoTLSConnections()
 		conn := tls.Client(baseConn, baseCfg)
 		baseCfg.CipherSuites = []uint16{ztlsCiphers[v]}
-
-		if err := c.tlsHandshakeWithTimeout(conn, context.TODO()); err == nil {
+		_ = baseConn.SetDeadline(time.Now().Add(timeout))
+		handshakeCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		err = c.tlsHandshakeWithTimeout(conn, handshakeCtx)
+		cancel()
+		if err == nil {
 			h1 := conn.GetHandshakeLog()
 			enumeratedCiphers = append(enumeratedCiphers, h1.ServerHello.CipherSuite.String())
 		}
@@ -322,16 +332,31 @@ func (c *Client) getConfig(hostname, ip, port string, options clients.ConnectOpt
 
 // tlsHandshakeWithCtx attempts tls handshake with given timeout
 func (c *Client) tlsHandshakeWithTimeout(tlsConn *tls.Conn, ctx context.Context) error {
-	errChan := make(chan error, 1)
-	defer close(errChan)
+	if _, ok := ctx.Deadline(); !ok {
+		timeout := time.Duration(c.options.Timeout) * time.Second
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = tlsConn.SetDeadline(deadline)
+	}
 
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- tlsConn.Handshake()
+	}()
+
+	var err error
 	select {
 	case <-ctx.Done():
 		return errorutil.NewWithTag("ztls", "timeout while attempting handshake") //nolint
-	case errChan <- tlsConn.Handshake():
+	case err = <-errChan:
 	}
 
-	err := <-errChan
 	if err == tls.ErrCertsOnly {
 		err = nil
 	}

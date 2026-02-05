@@ -5,6 +5,7 @@ import (
 	"net"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/projectdiscovery/goflags"
 	"github.com/projectdiscovery/tlsx/pkg/tlsx/openssl"
@@ -44,7 +45,7 @@ func DoHealthCheck(flagSet *goflags.FlagSet) string {
 		testResult += fmt.Sprintf(" (%s)", err)
 	}
 	test.WriteString(fmt.Sprintf("Config file \"%s\" Write => %s\n", cfgFilePath, testResult))
-	c4, err := net.Dial("tcp4", "scanme.sh:80")
+	c4, err := net.DialTimeout("tcp4", "scanme.sh:80", 5*time.Second)
 	if err == nil && c4 != nil {
 		_ = c4.Close()
 	}
@@ -53,7 +54,7 @@ func DoHealthCheck(flagSet *goflags.FlagSet) string {
 		testResult = fmt.Sprintf("Ko (%s)", err)
 	}
 	test.WriteString(fmt.Sprintf("IPv4 connectivity to scanme.sh:80 => %s\n", testResult))
-	c6, err := net.Dial("tcp6", "scanme.sh:80")
+	c6, err := net.DialTimeout("tcp6", "scanme.sh:80", 5*time.Second)
 	if err == nil && c6 != nil {
 		_ = c6.Close()
 	}
